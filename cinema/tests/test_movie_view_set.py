@@ -1,3 +1,7 @@
+import os
+import tempfile
+
+from PIL import Image
 from rest_framework import status
 from rest_framework.reverse import reverse
 from rest_framework.test import APIClient
@@ -27,6 +31,10 @@ def sample_movie(**params) -> Movie:
     }
     defaults.update(params)
     return Movie.objects.create(**defaults)
+
+def image_upload_url(movie_id):
+    return reverse("cinema:movie-upload-image", args=[movie_id])
+
 
 
 class UnauthenticatedMovieTests(TestCase):
@@ -67,6 +75,19 @@ class AuthenticatedMovieTests(TestCase):
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data, serializer.data)
+
+    def test_filter_movies_by_title(self):
+        movie_with_title = sample_movie(title="test")
+        movie_without_title = sample_movie(title="other")
+
+        response = self.client.get(MOVIE_URL, {"title": "test"})
+
+        serializer_with_title = MovieListSerializer(movie_with_title)
+        serializer_without_title = MovieListSerializer(movie_without_title)
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn(serializer_with_title.data, response.data)
+        self.assertNotIn(serializer_without_title.data, response.data)
 
     def test_filter_movies_by_genres(self):
         movie_without_genre = sample_movie()
@@ -205,3 +226,34 @@ class AdminMovieTests(TestCase):
         url = movie_detail_url(movie.id)
         res = self.client.delete(url)
         self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_upload_image(self):
+        self.movie = sample_movie()
+        url = image_upload_url(self.movie.id)
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg") as image_file:
+            img = Image.new("RGB", (10, 10))
+            img.save(image_file, format="JPEG")
+            image_file.seek(0)
+
+            response = self.client.post(
+                url,
+                {"image": image_file},
+                format="multipart"
+            )
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.movie.refresh_from_db()
+        self.assertIn("image", response.data)
+        self.assertTrue(os.path.exists(self.movie.image.path))
+
+    def test_upload_image_bad_request(self):
+        self.movie = sample_movie()
+        url = image_upload_url(self.movie.id)
+
+        response = self.client.post(
+            url,
+            {"image": "not_an_image"},
+            format="multipart"
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
